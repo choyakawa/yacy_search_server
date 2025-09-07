@@ -167,16 +167,8 @@ public class ConfigBasic {
             }
 
             String host = header.getServerName();
-            if (host == null || host.length() == 0) {
-                final java.net.InetAddress publicIp = Domains.myPublicLocalIP();
-                if (publicIp != null) {
-                    host = publicIp.getHostAddress();
-                } else {
-                    host = env.getLocalHost();
-                    if (host == null || host.length() == 0 || "0.0.0.0".equals(host)) {
-                        host = "localhost";
-                    }
-                }
+            if (host == null) {
+                host = Domains.myPublicLocalIP().getHostAddress();
             }
 
             prop.put("reconnect", "1");
