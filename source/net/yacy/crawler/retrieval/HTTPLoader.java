@@ -28,7 +28,12 @@ package net.yacy.crawler.retrieval;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.Locale;
+import java.util.TimeZone;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.http.HttpStatus;
 import org.apache.http.StatusLine;
@@ -139,6 +144,15 @@ public final class HTTPLoader {
 
         // create a request header
         final RequestHeader requestHeader = this.createRequestheader(request, agent);
+
+        // Prefer Wayback Machine when crawling pages/images: try once before original
+        if (shouldPreferWayback(blacklistType, url)) {
+            final StreamResponse wbStream = tryWaybackOpen(request, profile, maxFileSize, agent, requestHeader);
+            if (wbStream != null) {
+                return wbStream;
+            }
+            // else fall through to original URL fetch
+        }
 
         // HTTP-Client
         try (final HTTPClient client = new HTTPClient(agent)) {
@@ -300,6 +314,204 @@ public final class HTTPLoader {
     }
 
     /**
+     * Decide if Wayback Machine should be preferred for this request
+     */
+    private boolean shouldPreferWayback(final BlacklistType blacklistType, final DigestURL url) {
+        if (blacklistType != BlacklistType.CRAWLER) return false; // only for crawler
+        if (url == null) return false;
+        final String host = url.getHost();
+        if (host == null) return false;
+        if ("web.archive.org".equalsIgnoreCase(host)) return false; // avoid loop
+        final String protocol = url.getProtocol();
+        return "http".equals(protocol) || "https".equals(protocol);
+    }
+
+    private static final Pattern WAYBACK_TS_PATTERN = Pattern.compile("/web/([0-9]{14})");
+
+    /**
+     * Try to extract a 14-digit Wayback timestamp from a Wayback URL path
+     */
+    private String extractWaybackTimestamp(final String waybackUrl) {
+        if (waybackUrl == null) return null;
+        final Matcher m = WAYBACK_TS_PATTERN.matcher(waybackUrl);
+        if (m.find()) return m.group(1);
+        return null;
+    }
+
+    /**
+     * Apply a Wayback timestamp (yyyyMMddHHmmss) to Date and Last-Modified headers
+     */
+    private void applyWaybackTimestampToHeaders(final ResponseHeader responseHeader, final String ts) {
+        if (responseHeader == null || ts == null || ts.length() != 14) return;
+        final SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmmss", Locale.ROOT);
+        sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
+        try {
+            final String rfc = HeaderFramework.formatRFC1123(sdf.parse(ts));
+            responseHeader.put(HeaderFramework.DATE, rfc);
+            responseHeader.put(HeaderFramework.LAST_MODIFIED, rfc);
+        } catch (final ParseException e) {
+            // ignore
+        }
+    }
+
+    /**
+     * Attempt loading via Wayback (byte[] variant). Returns null when not available.
+     */
+    private Response tryWaybackLoad(
+            final Request request,
+            final CrawlProfile profile,
+            final int maxFileSize,
+            final ClientIdentification.Agent agent,
+            final RequestHeader originalRequestHeader
+        ) throws IOException {
+
+        final String original = request.url().toNormalform(false);
+        final DigestURL first = new DigestURL("https://web.archive.org/web/99999999im_/" + original);
+
+        // First hop: ask Wayback for latest snapshot, no auto-redirect
+        try (final HTTPClient client = new HTTPClient(agent)) {
+            client.setRedirecting(false);
+            client.setTimout(this.socketTimeout);
+            client.setHeader(originalRequestHeader.entrySet());
+            final byte[] body1 = client.GETbytes(first, null, null, maxFileSize, false);
+            final int code1 = client.getHttpResponse().getStatusLine().getStatusCode();
+            final ResponseHeader rh1 = new ResponseHeader(code1, client.getHttpResponse().getAllHeaders());
+
+            if (code1 > 299 && code1 < 310) {
+                // Follow one redirect to actual snapshot
+                final String loc = rh1.get(HeaderFramework.LOCATION);
+                if (loc == null || loc.isEmpty()) return null;
+                final DigestURL second = DigestURL.newURL(first, loc);
+
+                try (final HTTPClient client2 = new HTTPClient(agent)) {
+                    client2.setRedirecting(false);
+                    client2.setTimout(this.socketTimeout);
+                    client2.setHeader(originalRequestHeader.entrySet());
+                    final byte[] body2 = client2.GETbytes(second, null, null, maxFileSize, false);
+                    final int code2 = client2.getHttpResponse().getStatusLine().getStatusCode();
+                    if (body2 != null && (code2 == 200 || code2 == 203)) {
+                        final ResponseHeader rh2 = new ResponseHeader(code2, client2.getHttpResponse().getAllHeaders());
+                        final String ts = extractWaybackTimestamp(second.toNormalform(false));
+                        applyWaybackTimestampToHeaders(rh2, ts);
+                        return new Response(request, originalRequestHeader, rh2, profile, false, body2);
+                    }
+                }
+                return null;
+            }
+
+            if (body1 != null && (code1 == 200 || code1 == 203)) {
+                final ResponseHeader rh = new ResponseHeader(code1, client.getHttpResponse().getAllHeaders());
+                final String ts = extractWaybackTimestamp(first.toNormalform(false));
+                applyWaybackTimestampToHeaders(rh, ts);
+                return new Response(request, originalRequestHeader, rh, profile, false, body1);
+            }
+
+            // 404 or other -> not available
+            return null;
+        }
+    }
+
+    /**
+     * Attempt loading via Wayback (streaming variant). Returns null when not available.
+     */
+    private StreamResponse tryWaybackOpen(
+            final Request request,
+            final CrawlProfile profile,
+            final int maxFileSize,
+            final ClientIdentification.Agent agent,
+            final RequestHeader originalRequestHeader
+        ) throws IOException {
+
+        final String original = request.url().toNormalform(false);
+        final DigestURL first = new DigestURL("https://web.archive.org/web/99999999im_/" + original);
+
+        try (final HTTPClient client = new HTTPClient(agent)) {
+            client.setRedirecting(false);
+            client.setTimout(this.socketTimeout);
+            client.setHeader(originalRequestHeader.entrySet());
+            client.GET(first, false);
+            final int code1 = client.getHttpResponse().getStatusLine().getStatusCode();
+            final ResponseHeader rh1 = new ResponseHeader(code1, client.getHttpResponse().getAllHeaders());
+
+            if (code1 > 299 && code1 < 310) {
+                final String loc = rh1.get(HeaderFramework.LOCATION);
+                if (loc == null || loc.isEmpty()) return null;
+                final DigestURL second = DigestURL.newURL(first, loc);
+
+                final HTTPClient client2 = new HTTPClient(agent);
+                client2.setRedirecting(false);
+                client2.setTimout(this.socketTimeout);
+                client2.setHeader(originalRequestHeader.entrySet());
+                try {
+                    client2.GET(second, false);
+                    final int code2 = client2.getHttpResponse().getStatusLine().getStatusCode();
+                    final ResponseHeader rh2 = new ResponseHeader(code2, client2.getHttpResponse().getAllHeaders());
+                    if (code2 == 200 || code2 == 203) {
+                        final long contentLength = client2.getHttpResponse().getEntity().getContentLength();
+                        InputStream contentStream;
+                        if (profile != null && profile.storeHTCache() && contentLength > 0 && contentLength < (Response.CRAWLER_MAX_SIZE_TO_CACHE) && !request.url().isLocal()) {
+                            byte[] content = null;
+                            try {
+                                content = HTTPClient.getByteArray(client2.getHttpResponse().getEntity(), maxFileSize);
+                                Cache.store(request.url(), rh2, content);
+                            } catch (final IOException e) {
+                                this.log.warn("cannot write " + request.url() + " to Cache (WB): " + e.getMessage(), e);
+                            }
+                            contentStream = new ByteArrayInputStream(content);
+                        } else {
+                            if (maxFileSize >= 0 && contentLength > maxFileSize) {
+                                throw new IOException("Content to download exceed maximum value of " + Formatter.bytesToString(maxFileSize));
+                            }
+                            contentStream = new HTTPInputStream(client2);
+                            if (maxFileSize >= 0) {
+                                contentStream = new StrictLimitInputStream(contentStream, maxFileSize,
+                                        "Content to download exceed maximum value of " + Formatter.bytesToString(maxFileSize));
+                            }
+                        }
+                        final String ts = extractWaybackTimestamp(second.toNormalform(false));
+                        applyWaybackTimestampToHeaders(rh2, ts);
+                        return new StreamResponse(new Response(request, originalRequestHeader, rh2, profile, false, null), contentStream);
+                    }
+                } catch (final IOException ioe) {
+                    try { client2.close(); } catch (final IOException ignore) {}
+                    throw ioe;
+                }
+                return null;
+            }
+
+            if (code1 == 200 || code1 == 203) {
+                final long contentLength = client.getHttpResponse().getEntity().getContentLength();
+                final ResponseHeader rh = new ResponseHeader(code1, client.getHttpResponse().getAllHeaders());
+                InputStream contentStream;
+                if (profile != null && profile.storeHTCache() && contentLength > 0 && contentLength < (Response.CRAWLER_MAX_SIZE_TO_CACHE) && !request.url().isLocal()) {
+                    byte[] content = null;
+                    try {
+                        content = HTTPClient.getByteArray(client.getHttpResponse().getEntity(), maxFileSize);
+                        Cache.store(request.url(), rh, content);
+                    } catch (final IOException e) {
+                        this.log.warn("cannot write " + request.url() + " to Cache (WB1): " + e.getMessage(), e);
+                    }
+                    contentStream = new ByteArrayInputStream(content);
+                } else {
+                    if (maxFileSize >= 0 && contentLength > maxFileSize) {
+                        throw new IOException("Content to download exceed maximum value of " + Formatter.bytesToString(maxFileSize));
+                    }
+                    contentStream = new HTTPInputStream(client);
+                    if (maxFileSize >= 0) {
+                        contentStream = new StrictLimitInputStream(contentStream, maxFileSize,
+                                "Content to download exceed maximum value of " + Formatter.bytesToString(maxFileSize));
+                    }
+                }
+                final String ts = extractWaybackTimestamp(first.toNormalform(false));
+                applyWaybackTimestampToHeaders(rh, ts);
+                return new StreamResponse(new Response(request, originalRequestHeader, rh, profile, false, null), contentStream);
+            }
+
+            return null;
+        }
+    }
+
+    /**
      * Create request header for loading content.
      * @param request search request
      * @param agent agent identification information
@@ -362,6 +574,15 @@ public final class HTTPLoader {
 
         // create a request header
         final RequestHeader requestHeader = this.createRequestheader(request, agent);
+
+        // Prefer Wayback Machine when crawling pages/images: try once before original
+        if (shouldPreferWayback(blacklistType, url)) {
+            final Response wbResponse = tryWaybackLoad(request, profile, maxFileSize, agent, requestHeader);
+            if (wbResponse != null) {
+                return wbResponse;
+            }
+            // else fall through to original URL fetch
+        }
 
         // HTTP-Client
         try (final HTTPClient client = new HTTPClient(agent)) {
