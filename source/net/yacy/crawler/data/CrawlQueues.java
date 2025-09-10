@@ -745,7 +745,7 @@ public class CrawlQueues {
                         // checking robots.txt for http(s) resources
                         this.request.setStatus("worker-checkingrobots", WorkflowJob.STATUS_STARTED);
                         RobotsTxtEntry robotsEntry;
-                        if ((this.request.url().getProtocol().equals("http") || this.request.url().getProtocol().equals("https")) &&
+                        if (false && (this.request.url().getProtocol().equals("http") || this.request.url().getProtocol().equals("https")) &&
                             profile.getAgent().isRobot() &&
                             (robotsEntry = CrawlQueues.this.sb.robots.getEntry(this.request.url(), profile.getAgent())) != null &&
                             robotsEntry.isDisallowed(this.request.url())) {
