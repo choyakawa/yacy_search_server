@@ -128,7 +128,7 @@ public final class SearchEvent implements ScoreMapUpdatesListener {
 
     public final static ConcurrentLog log = new ConcurrentLog("SEARCH");
 
-    public static final int SNIPPET_MAX_LENGTH = 220;
+    public static final int SNIPPET_MAX_LENGTH = 1024;
 
     /** Default count of words for topicnavigagtor */
     private static final int MAX_TOPWORDS = 12;
