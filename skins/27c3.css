@@ -197,9 +197,8 @@ form.search.small h2 {
   color:#ffffff;
 }
 
-.snippetLoaded strong {
-  color:#ffffff;
-}
+.snippetLoaded { white-space: pre-line; }
+.snippetLoaded strong { color:#ffffff; }
 
 .searchresults .url a {
   color:#808080;

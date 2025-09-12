@@ -186,6 +186,10 @@ tt, *.tt {
   color: #666;
 } */
 
+.snippetLoaded {
+  white-space: pre-line;
+}
+
 .snippetLoaded b {
   font-weight:bold;
 }

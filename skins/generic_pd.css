@@ -219,9 +219,8 @@ form.search.small h2 {
   color:#[color_searchheadline]#;
 }
 
-.snippetLoaded strong {
-  color:black;
-}
+.snippetLoaded { white-space: pre-line; }
+.snippetLoaded strong { color:black; }
 
 .searchresults .url a {
   color:#[color_searchurl]#;

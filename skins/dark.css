@@ -74,6 +74,7 @@ a.bookmarkAction		{ color: #999999; }
 .searchresults		{ border-top: 1px #000 dashed; }
 .searchresults .url a	{ color: #008000; }
 .snippetLoading		{ color: #999999; }
+.snippetLoaded { white-space: pre-line; }
 .snippetLoaded b { color: #999999; }
 .snippetError		{ color: red; }
 .searchHighlight1	{ font-weight: bold; color: #FFFF64; }

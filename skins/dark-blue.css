@@ -193,4 +193,8 @@ div.ProgressBarFill {
   color: #999999;
 }
 
+.snippetLoaded {
+  white-space: pre-line;
+}
+
 .navbar-default{background-color:#000;border-color:#000}

@@ -173,9 +173,8 @@ form.search.small h2 {
   color:#999999;
 }
 
-.snippetLoaded strong {
-  background:#dddddd;
-}
+.snippetLoaded { white-space: pre-line; }
+.snippetLoaded strong { background:#dddddd; }
 
 .snippetError {
   color:red;

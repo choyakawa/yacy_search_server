@@ -244,6 +244,7 @@ form.search.small h2 {
 .snippetLoaded {
   font-size:1.2em;
   line-height: 1.2;
+  white-space: pre-line;
 }
 .snippetLoaded strong {
   color:black;
