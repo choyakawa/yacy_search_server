@@ -1244,7 +1244,7 @@ public class CollectionConfiguration extends SchemaConfiguration implements Seri
         x = x.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ');
         x = x.replaceAll("\\s+", "-");
         // Remove surrounding punctuation
-        x = x.replaceAll("[^\u4e00-\u9fa5A-Za-z0-9\-_.]+", "");
+        x = x.replaceAll("[^\u4e00-\u9fa5A-Za-z0-9_.-]+", "");
         if (x.isEmpty()) x = "section";
         if (x.length() > 120) x = x.substring(0, 120);
         return x.toLowerCase(java.util.Locale.ROOT);
