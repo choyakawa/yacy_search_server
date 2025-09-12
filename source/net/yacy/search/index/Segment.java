@@ -664,6 +664,15 @@ public class Segment {
 
         // STORE TO SOLR
         this.putDocument(vector);
+        // Store sub-documents (markdown blocks) when present
+        if (vector instanceof CollectionConfiguration.SolrVector) {
+            final java.util.List<org.apache.solr.common.SolrInputDocument> subDocs = ((CollectionConfiguration.SolrVector) vector).getSubDocuments();
+            if (subDocs != null && !subDocs.isEmpty()) {
+                for (final org.apache.solr.common.SolrInputDocument sd : subDocs) {
+                    this.putDocument(sd);
+                }
+            }
+        }
         List<SolrInputDocument> webgraph = vector.getWebgraphDocuments();
         String error = null;
         if (webgraph != null && webgraph.size() > 0) {

@@ -989,7 +989,25 @@ public class URIMetadataNode extends SolrDocument /* implements Comparable<URIMe
      */
     public String urlstring() {
         if (this.alternative_urlstring != null) return this.alternative_urlstring;
-
+        // Prefer displaying a single trailing hashtag fragment when present in sku
+        try {
+            final String rawSku = this.getString(CollectionSchema.sku);
+            if (rawSku != null) {
+                final int pos = rawSku.indexOf('#');
+                if (pos >= 0) {
+                    final String base = rawSku.substring(0, pos);
+                    final int last = rawSku.lastIndexOf('#');
+                    if (last > pos && last + 1 < rawSku.length()) {
+                        final String lastFrag = rawSku.substring(last + 1);
+                        return base + "#" + lastFrag;
+                    }
+                    // only one '#': keep as is
+                    return rawSku;
+                }
+            }
+        } catch (final Throwable e) {
+            // fall through to default behavior
+        }
         return this.url().toNormalform(true);
     }
     /**

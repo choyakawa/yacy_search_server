@@ -443,15 +443,23 @@ public class CollectionConfiguration extends SchemaConfiguration implements Seri
     public static class SolrVector extends SolrInputDocument {
         private static final long serialVersionUID = -210901881471714939L;
         private final List<SolrInputDocument> webgraphDocuments;
+        private final List<SolrInputDocument> subDocuments;
         public SolrVector() {
             super();
             this.webgraphDocuments = new ArrayList<>();
+            this.subDocuments = new ArrayList<>();
         }
         public void addWebgraphDocument(SolrInputDocument webgraphDocument) {
             this.webgraphDocuments.add(webgraphDocument);
         }
         public List<SolrInputDocument> getWebgraphDocuments() {
             return this.webgraphDocuments;
+        }
+        public void addSubDocument(SolrInputDocument subDocument) {
+            this.subDocuments.add(subDocument);
+        }
+        public List<SolrInputDocument> getSubDocuments() {
+            return this.subDocuments;
         }
     }
 
@@ -910,6 +918,111 @@ public class CollectionConfiguration extends SchemaConfiguration implements Seri
 
         String content = document.getTextString();
 
+        // Extract markdown blocks and create sub-documents for them. Remove blocks from main content.
+        // Rules:
+        // - minimal unit: ### block
+        // - also treat immediate text after a ## heading as a unit
+        // - beginning text before first ##/### is also a unit
+        // - ignore # level as plain text
+        // - when no markdown headings found, keep original handling
+        if (scraper instanceof ContentScraper) {
+            final String mainTitle = document.dc_title() == null ? "" : document.dc_title();
+            final String rootURLString = digestURL.toNormalform(true);
+
+            final List<Object[]> blocks = splitMarkdownIntoBlocks(content);
+            if (!blocks.isEmpty()) {
+                // Build a remainder by cutting out all block ranges
+                final StringBuilder remainderBuilder = new StringBuilder(content.length());
+                int cursor = 0;
+                for (final Object[] b : blocks) {
+                    final int start = (Integer) b[3];
+                    final int end = (Integer) b[4];
+                    if (start > cursor) remainderBuilder.append(content, cursor, start);
+                    cursor = Math.max(cursor, end);
+                }
+                if (cursor < content.length()) remainderBuilder.append(content, cursor, content.length());
+                final String originalContent = content;
+                content = remainderBuilder.toString();
+
+                // Create sub-documents for each block
+                for (final Object[] b : blocks) {
+                    final String level = (String) b[0]; // PREFACE, H2, H3
+                    final String h2 = (String) b[1];
+                    final String h3 = (String) b[2];
+                    final int start = (Integer) b[3];
+                    final int end = (Integer) b[4];
+                    final String blockText = originalContent.substring(Math.max(0, start), Math.min(originalContent.length(), end)).trim();
+                    if (blockText == null || blockText.trim().isEmpty()) continue;
+
+                    final String fragmentChain;
+                    if ("H3".equals(level)) {
+                        final String f2 = net.yacy.cora.document.id.MultiProtocolURL.escape(normalizeFragment(h2)).toString();
+                        final String f3 = net.yacy.cora.document.id.MultiProtocolURL.escape(normalizeFragment(h3)).toString();
+                        fragmentChain = "#" + f2 + "#" + f3;
+                    } else if ("H2".equals(level)) {
+                        final String f2 = net.yacy.cora.document.id.MultiProtocolURL.escape(normalizeFragment(h2)).toString();
+                        fragmentChain = "#" + f2;
+                    } else { // PREFACE
+                        fragmentChain = "#intro";
+                    }
+
+                    final String subUrl = rootURLString + fragmentChain;
+                    net.yacy.cora.document.id.DigestURL subDigestURL;
+                    try {
+                        subDigestURL = new net.yacy.cora.document.id.DigestURL(subUrl);
+                    } catch (final java.net.MalformedURLException e) {
+                        continue; // skip malformed urls
+                    }
+
+                    final SolrInputDocument subDoc = new SolrInputDocument();
+                    // id/sku/host_id_s
+                    this.addURIAttributes(subDoc, true, subDigestURL);
+                    // Override default id to ensure uniqueness across fragments (YaCy URL hash ignores anchors)
+                    final String blockId = net.yacy.cora.order.Base64Order.enhancedCoder.encode(net.yacy.cora.order.Digest.encodeMD5Raw(subUrl)).substring(0, 12);
+                    this.add(subDoc, CollectionSchema.id, blockId);
+                    // Store sku INCLUDING fragment chain for de-duplication
+                    this.add(subDoc, CollectionSchema.sku, subUrl);
+                    // mandatory fields
+                    this.add(subDoc, CollectionSchema.last_modified, responseHeader == null ? document.getLastModified() : responseHeader.lastModified());
+                    this.add(subDoc, CollectionSchema.load_date_dt, new java.util.Date());
+                    this.add(subDoc, CollectionSchema.content_type, new String[]{document.dc_format()});
+
+                    final StringBuilder titleBuilder = new StringBuilder();
+                    if (!mainTitle.isEmpty()) titleBuilder.append(mainTitle);
+                    if ("H2".equals(level)) {
+                        if (titleBuilder.length() > 0) titleBuilder.append(" > ");
+                        titleBuilder.append(h2);
+                    } else if ("H3".equals(level)) {
+                        if (titleBuilder.length() > 0) titleBuilder.append(" > ");
+                        titleBuilder.append(h2);
+                        titleBuilder.append(" > ");
+                        titleBuilder.append(h3);
+                    } else {
+                        if (titleBuilder.length() > 0) titleBuilder.append(" > ");
+                        titleBuilder.append("Intro");
+                    }
+                    this.add(subDoc, CollectionSchema.title, titleBuilder.toString());
+
+                    // text and basic counters
+                    if (this.contains(CollectionSchema.text_t) || allAttr) this.add(subDoc, CollectionSchema.text_t, blockText);
+                    if (this.contains(CollectionSchema.wordcount_i) || allAttr) {
+                        int wc = 0;
+                        final String bt = blockText.trim();
+                        if (!bt.isEmpty()) {
+                            wc = 1;
+                            for (int i = 0; i < bt.length(); i++) if (bt.charAt(i) == ' ') wc++;
+                        }
+                        this.add(subDoc, CollectionSchema.wordcount_i, wc);
+                    }
+                    if (this.contains(CollectionSchema.size_i) || allAttr) this.add(subDoc, CollectionSchema.size_i, blockText.length());
+                    if (this.contains(CollectionSchema.httpstatus_i) || allAttr) this.add(subDoc, CollectionSchema.httpstatus_i, responseHeader == null ? 200 : responseHeader.getStatusCode());
+                    if (this.contains(CollectionSchema.failreason_s) || allAttr) this.add(subDoc, CollectionSchema.failreason_s, "");
+
+                    doc.addSubDocument(subDoc);
+                }
+            }
+        }
+
         // handle image source meta data
         if (document.getContentDomain() == ContentDomain.IMAGE) {
             // add image pixel sizes if enabled in index
@@ -1029,6 +1142,112 @@ public class CollectionConfiguration extends SchemaConfiguration implements Seri
         // document enrichments (synonyms, facets)
         this.enrich(doc, condenser.synonyms(), document.getGenericFacets());
         return doc;
+    }
+
+    /**
+     * Split YaCy markdown-like content (from ContentScraper) into blocks.
+     * Returns a list of Object[]{ level("PREFACE"|"H2"|"H3"), h2Title, h3Title, startIndex, endIndex }.
+     */
+    private static List<Object[]> splitMarkdownIntoBlocks(final String content) {
+        final List<Object[]> blocks = new ArrayList<>();
+        if (content == null || content.isEmpty()) return blocks;
+
+        final java.util.regex.Pattern h2p = java.util.regex.Pattern.compile("(?m)^\\s*##\\s+(.+?)\\s*$");
+        final java.util.regex.Pattern h3p = java.util.regex.Pattern.compile("(?m)^\\s*###\\s+(.+?)\\s*$");
+
+        final java.util.List<int[]> h2s = new ArrayList<>(); // [start, endOfLine, titleStart, titleEnd]
+        final java.util.List<String> h2t = new ArrayList<>();
+        final java.util.List<int[]> h3s = new ArrayList<>(); // [start, endOfLine, titleStart, titleEnd]
+        final java.util.List<String> h3t = new ArrayList<>();
+
+        // collect H2
+        final java.util.regex.Matcher m2 = h2p.matcher(content);
+        while (m2.find()) {
+            final int hs = m2.start();
+            int eol = content.indexOf('\n', m2.end());
+            if (eol < 0) eol = content.length();
+            h2s.add(new int[]{hs, eol});
+            h2t.add(m2.group(1).trim());
+        }
+        // collect H3
+        final java.util.regex.Matcher m3 = h3p.matcher(content);
+        while (m3.find()) {
+            final int hs = m3.start();
+            int eol = content.indexOf('\n', m3.end());
+            if (eol < 0) eol = content.length();
+            h3s.add(new int[]{hs, eol});
+            h3t.add(m3.group(1).trim());
+        }
+
+        if (h2s.isEmpty() && h3s.isEmpty()) return blocks; // no markdown headings: keep original handling
+
+        // Preface block: 0 -> min(first H2/H3 start)
+        int firstHeadingStart = content.length();
+        if (!h2s.isEmpty()) firstHeadingStart = Math.min(firstHeadingStart, h2s.get(0)[0]);
+        if (!h3s.isEmpty()) firstHeadingStart = Math.min(firstHeadingStart, h3s.get(0)[0]);
+        if (firstHeadingStart > 0) {
+            final String pre = content.substring(0, firstHeadingStart).trim();
+            if (!pre.isEmpty()) {
+                blocks.add(new Object[]{"PREFACE", null, null, Integer.valueOf(0), Integer.valueOf(firstHeadingStart)});
+            }
+        }
+
+        // For each H2, compute immediate text block and H3 blocks within
+        for (int i = 0; i < h2s.size(); i++) {
+            final int[] h2 = h2s.get(i);
+            final String h2Title = h2t.get(i);
+            final int h2ContentStart = Math.min(content.length(), h2[1] + 1);
+            final int nextH2Start = (i + 1 < h2s.size()) ? h2s.get(i + 1)[0] : content.length();
+
+            // first child H3 under this H2
+            int firstH3Index = -1;
+            for (int j = 0; j < h3s.size(); j++) {
+                final int[] h3 = h3s.get(j);
+                if (h3[0] > h2[0] && h3[0] < nextH2Start) { firstH3Index = j; break; }
+            }
+            final int h2ImmediateEnd = (firstH3Index >= 0) ? h3s.get(firstH3Index)[0] : nextH2Start;
+            if (h2ContentStart < h2ImmediateEnd) {
+                final String seg = content.substring(h2ContentStart, h2ImmediateEnd).trim();
+                if (!seg.isEmpty()) {
+                    blocks.add(new Object[]{"H2", h2Title, null, Integer.valueOf(h2ContentStart), Integer.valueOf(h2ImmediateEnd)});
+                }
+            }
+
+            // H3 blocks under this H2
+            for (int j = 0; j < h3s.size(); j++) {
+                final int[] h3 = h3s.get(j);
+                if (h3[0] <= h2[0] || h3[0] >= nextH2Start) continue; // not under this H2
+                final String h3Title = h3t.get(j);
+                final int h3ContentStart = Math.min(content.length(), h3[1] + 1);
+                int nextH3Start = nextH2Start;
+                for (int k = j + 1; k < h3s.size(); k++) {
+                    final int[] h3n = h3s.get(k);
+                    if (h3n[0] < nextH2Start) { nextH3Start = h3n[0]; break; }
+                }
+                final int h3End = nextH3Start;
+                if (h3ContentStart < h3End) {
+                    final String seg = content.substring(h3ContentStart, h3End).trim();
+                    if (!seg.isEmpty()) {
+                        blocks.add(new Object[]{"H3", h2Title, h3Title, Integer.valueOf(h3ContentStart), Integer.valueOf(h3End)});
+                    }
+                }
+            }
+        }
+
+        return blocks;
+    }
+
+    private static String normalizeFragment(final String s) {
+        if (s == null) return "";
+        String x = s.trim();
+        // Replace consecutive spaces with single hyphen
+        x = x.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ');
+        x = x.replaceAll("\\s+", "-");
+        // Remove surrounding punctuation
+        x = x.replaceAll("[^\u4e00-\u9fa5A-Za-z0-9\-_.]+", "");
+        if (x.isEmpty()) x = "section";
+        if (x.length() > 120) x = x.substring(0, 120);
+        return x.toLowerCase(java.util.Locale.ROOT);
     }
 
 	/**
