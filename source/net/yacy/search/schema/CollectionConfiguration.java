@@ -982,6 +982,8 @@ public class CollectionConfiguration extends SchemaConfiguration implements Seri
                     this.add(subDoc, CollectionSchema.id, blockId);
                     // Store sku INCLUDING fragment chain for de-duplication
                     this.add(subDoc, CollectionSchema.sku, subUrl);
+                    // Also fix url length to reflect fragment for stable sorts/pagination
+                    if (this.contains(CollectionSchema.url_chars_i) || allAttr) this.add(subDoc, CollectionSchema.url_chars_i, subUrl.length());
                     // mandatory fields
                     this.add(subDoc, CollectionSchema.last_modified, responseHeader == null ? document.getLastModified() : responseHeader.lastModified());
                     this.add(subDoc, CollectionSchema.load_date_dt, new java.util.Date());

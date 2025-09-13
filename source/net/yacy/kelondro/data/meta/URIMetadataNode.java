@@ -180,15 +180,18 @@ public class URIMetadataNode extends SolrDocument /* implements Comparable<URIMe
         final String hashstr = getString(CollectionSchema.id); // id or empty string
         final String urlRaw = getString(CollectionSchema.sku);
         this.url = new DigestURL(urlRaw);
-        if (!hashstr.isEmpty()) { // remote id might not correspond in all cases
-            final String myhash = ASCII.String(this.url.hash());
-            if (!hashstr.equals(myhash)) {
-                this.setField(CollectionSchema.id.getSolrFieldName(), myhash);
-                ConcurrentLog.fine("KELONDRO", "URIMetadataNode: updated document.ID of " + urlRaw + " from " + hashstr + " to " + myhash);
-                // ususally the hosthash matches but just to be on the safe site
-                final String hostidstr = getString(CollectionSchema.host_id_s); // id or empty string
-                if (!hostidstr.isEmpty() && !hostidstr.equals(this.url.hosthash())) {
-                    this.setField(CollectionSchema.host_id_s.getSolrFieldName(), this.url.hosthash());
+        // When sku contains a fragment ("#"), keep Solr-stored id as-is to ensure block-level uniqueness
+        if (urlRaw == null || urlRaw.indexOf('#') < 0) {
+            if (!hashstr.isEmpty()) { // remote id might not correspond in all cases
+                final String myhash = ASCII.String(this.url.hash());
+                if (!hashstr.equals(myhash)) {
+                    this.setField(CollectionSchema.id.getSolrFieldName(), myhash);
+                    ConcurrentLog.fine("KELONDRO", "URIMetadataNode: updated document.ID of " + urlRaw + " from " + hashstr + " to " + myhash);
+                    // ususally the hosthash matches but just to be on the safe site
+                    final String hostidstr = getString(CollectionSchema.host_id_s); // id or empty string
+                    if (!hostidstr.isEmpty() && !hostidstr.equals(this.url.hosthash())) {
+                        this.setField(CollectionSchema.host_id_s.getSolrFieldName(), this.url.hosthash());
+                    }
                 }
             }
         }
@@ -227,6 +230,9 @@ public class URIMetadataNode extends SolrDocument /* implements Comparable<URIMe
     }
 
     public byte[] hash() {
+        // Prefer the stored id to maintain uniqueness for block-level documents
+        final String id = getString(CollectionSchema.id);
+        if (id != null && id.length() == 12) return ASCII.getBytes(id);
         return this.url.hash();
     }
 
